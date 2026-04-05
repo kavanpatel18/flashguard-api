@@ -29,6 +29,11 @@ ENV PYTHONUNBUFFERED=1 \
                     EXPOSE $PORT
 
                     # Define the command to run the application
-                    CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "--log-level", "info", "api_server:app"]
+                    # ── 11. Run with Gunicorn ─────────────────────────────────────────────────────
+# 1 worker, 2 threads — safe for a TF model (models are loaded once per
+# worker via the module-level _load cache) within 512MB RAM constraints on Render.
+# Timeout set to 120s to allow model cold-start on first inference.
+# Bind to PORT environment variable provided by Render, defaulting to 5000.
+CMD sh -c "gunicorn --workers 1 --threads 2 --bind 0.0.0.0:${PORT:-5000} --timeout 120 --access-logfile - --error-logfile - --log-level info api_server:app"
 
                     
