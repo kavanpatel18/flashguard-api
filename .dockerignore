@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .dockerignore — FlashGuard v4
+# Prevents these files from being sent in the Docker build context.
+# Keeps the image lean and avoids leaking secrets.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Secrets (NEVER bake into image) ──────────────────────────────────────────
+.env
+
+# ── Python cache & compiled files ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env.local
+
+# ── Test artifacts ────────────────────────────────────────────────────────────
+test_api_server.py
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# ── IDE / editor config ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── Docs ──────────────────────────────────────────────────────────────────────
+README.md
+*.md

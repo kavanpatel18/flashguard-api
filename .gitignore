@@ -1,0 +1,29 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment logs
+*.log
+keras_err.txt
+out_load.txt
+pytest_out.txt
+test_results.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# PyTest
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
