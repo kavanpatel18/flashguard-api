@@ -7,51 +7,22 @@ FlashGuard v4 — Upstox-First Real-Time API Server
 • Attention layer weights: W=(u,u)  b=(u,)  V=(u,)  [flat]
 
 Run:
-    pip install -r requirements.txt
+    pip install flask flask-cors numpy pandas requests scikit-learn tensorflow "yfinance==0.2.38"
     python api_server.py
     → http://localhost:5000
 """
 
-import io, sys, traceback, time, random, json, logging, os
+import gzip, io, sys, traceback, time, random, json, threading
 from datetime import date, timedelta, datetime
 from pathlib import Path
-from functools import wraps
-
-# ── Load .env before anything else ────────────────────────────────────────────
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv optional; environment vars may already be set
 
 import numpy  as np
 import pandas as pd
 import requests
 
-from flask import Flask, request, jsonify, send_from_directory, g
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from sklearn.preprocessing import StandardScaler
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOGGING CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_LOG_LEVEL_STR = os.getenv("LOG_LEVEL", "INFO").upper()
-_LOG_LEVEL     = getattr(logging, _LOG_LEVEL_STR, logging.INFO)
-_LOG_FILE      = os.getenv("LOG_FILE", "")
-
-_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
-if _LOG_FILE:
-    _handlers.append(logging.FileHandler(_LOG_FILE, encoding="utf-8"))
-
-logging.basicConfig(
-    level   = _LOG_LEVEL,
-    format  = "%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
-    datefmt = "%Y-%m-%d %H:%M:%S",
-    handlers= _handlers,
-)
-
-logger = logging.getLogger("flashguard")
 
 # ── Keras ─────────────────────────────────────────────────────────────────────
 try:
@@ -59,10 +30,10 @@ try:
     import keras
     from keras.models import load_model as _keras_load
     KERAS_OK = True
-    logger.info("TensorFlow %s ready", tf.__version__)
+    print(f"  TensorFlow {tf.__version__} ready")
 except ImportError:
     KERAS_OK = False
-    logger.warning("TensorFlow not installed — model inference disabled")
+    print("  WARNING: TensorFlow not installed")
 
 if KERAS_OK:
     @keras.saving.register_keras_serializable(package="custom_layers")
@@ -81,127 +52,112 @@ if KERAS_OK:
             return tf.reduce_sum(x * w, axis=1)
         def get_config(self):
             return super().get_config()
-
-    @keras.saving.register_keras_serializable(package="custom_layers")
-    class TemporalAttention(keras.layers.Layer):
-        def __init__(self, units=64, **kwargs):
-            super().__init__(**kwargs)
-            self.units = units
-            self.W = keras.layers.Dense(units, use_bias=False)
-            self.v = keras.layers.Dense(1, use_bias=False)
-        def call(self, hidden_states, training=False):
-            score   = self.v(tf.nn.tanh(self.W(hidden_states)))
-            weights = tf.nn.softmax(score, axis=1)
-            context = tf.reduce_sum(weights * hidden_states, axis=1)
-            return context
-        def get_config(self):
-            cfg = super().get_config()
-            cfg.update({"units": self.units})
-            return cfg
-
-    _CUSTOM = {"Attention": Attention, "TemporalAttention": TemporalAttention}
+    _CUSTOM = {"Attention": Attention}
 else:
     _CUSTOM = {}
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION (environment-driven)
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Paths & Flask ─────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND = BASE_DIR / "frontend"
 
-FLASK_HOST      = os.getenv("FLASK_HOST",      "0.0.0.0")
-FLASK_PORT      = int(os.getenv("FLASK_PORT",  "5000"))
-FLASK_DEBUG     = os.getenv("FLASK_DEBUG",     "false").lower() == "true"
-DEFAULT_TOKEN   = os.getenv("UPSTOX_TOKEN",    "")
-MODEL_THRESHOLD = float(os.getenv("MODEL_THRESHOLD", "0.20"))
-DEFAULT_MODEL   = os.getenv("DEFAULT_MODEL",   "msa_gru_best.keras")
-
-logger.info("Config loaded | host=%s port=%d debug=%s threshold=%.2f default_model=%s",
-            FLASK_HOST, FLASK_PORT, FLASK_DEBUG, MODEL_THRESHOLD, DEFAULT_MODEL)
-
-# ── Flask ─────────────────────────────────────────────────────────────────────
 app = Flask(__name__, static_folder=str(FRONTEND), static_url_path="")
 CORS(app)
 
-# Suppress Flask/Werkzeug access logs unless DEBUG is on
-if not FLASK_DEBUG:
-    logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# REQUEST TIMING MIDDLEWARE
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.before_request
-def _start_timer():
-    g.start_time = time.perf_counter()
-
-@app.after_request
-def _log_request(response):
-    duration_ms = (time.perf_counter() - g.start_time) * 1000
-    logger.info(
-        "%s %s → %d  (%.1f ms)",
-        request.method, request.path, response.status_code, duration_ms,
-    )
-    return response
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# UPSTOX CONFIG
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Upstox config ─────────────────────────────────────────────────────────────
 UPSTOX_BASE = "https://api.upstox.com/v2"
 
-NSE_MAP = {
-    "RELIANCE":   "NSE_EQ|INE002A01018",
-    "TCS":        "NSE_EQ|INE467B01029",
-    "HDFCBANK":   "NSE_EQ|INE040A01034",
-    "INFY":       "NSE_EQ|INE009A01021",
-    "ICICIBANK":  "NSE_EQ|INE090A01021",
-    "SBIN":       "NSE_EQ|INE062A01020",
-    "WIPRO":      "NSE_EQ|INE075A01022",
-    "BAJFINANCE": "NSE_EQ|INE296A01032",
-    "AXISBANK":   "NSE_EQ|INE238A01034",
-    "MARUTI":     "NSE_EQ|INE585B01010",
-    "ITC":        "NSE_EQ|INE154A01025",
-    "ADANIENT":   "NSE_EQ|INE423A01024",
-    "BHARTIARTL": "NSE_EQ|INE397D01024",
-    "KOTAKBANK":  "NSE_EQ|INE237A01036",
-    "HINDUNILVR": "NSE_EQ|INE030A01027",
-    "TATAMOTORS": "NSE_EQ|INE155A01022",
-    "SUNPHARMA":  "NSE_EQ|INE044A01036",
-    "TITAN":      "NSE_EQ|INE280A01028",
-    "LT":         "NSE_EQ|INE018A01030",
-    "HCLTECH":    "NSE_EQ|INE860A01027",
-    "NIFTY50":    "NSE_INDEX|Nifty 50",
-    "BANKNIFTY":  "NSE_INDEX|Nifty Bank",
-    "SENSEX":     "BSE_INDEX|SENSEX",
-}
+# Default token — can be overridden per-request
+DEFAULT_TOKEN = ""   # User pastes token in the UI; this is the hardcoded fallback
 
-for k in list(NSE_MAP.keys()):
-    NSE_MAP[k + ".NS"] = NSE_MAP[k]
+# ── Dynamic Upstox instrument master ──────────────────────────────────────────
+INSTRUMENT_LIST_URL = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
+_instrument_cache: list[dict] = []          # [{symbol, name, instrument_key, segment}, …]
+_instrument_lock = threading.Lock()
+_instrument_loaded = False
 
+
+def _load_instruments():
+    """Download & cache the Upstox master instrument file."""
+    global _instrument_cache, _instrument_loaded
+    with _instrument_lock:
+        if _instrument_loaded:
+            return
+        try:
+            print("  Downloading Upstox instrument master…")
+            resp = requests.get(INSTRUMENT_LIST_URL, timeout=30)
+            resp.raise_for_status()
+            raw = gzip.decompress(resp.content)
+            instruments = json.loads(raw)
+            filtered = []
+            for inst in instruments:
+                seg = inst.get("segment", "")
+                if seg not in ("NSE_EQ", "NSE_INDEX", "BSE_INDEX"):
+                    continue
+                sym  = inst.get("trading_symbol", "").strip()
+                name = inst.get("name", "").strip()
+                ikey = inst.get("instrument_key", "").strip()
+                if sym and ikey:
+                    filtered.append({"symbol": sym, "name": name,
+                                     "instrument_key": ikey, "segment": seg})
+            _instrument_cache = sorted(filtered, key=lambda x: x["symbol"])
+            _instrument_loaded = True
+            print(f"  Loaded {len(_instrument_cache)} instruments")
+        except Exception as e:
+            print(f"  Failed to load instruments: {e}")
+
+
+def _search_instruments(query: str, limit: int = 15) -> list[dict]:
+    """Search cached instruments by symbol/name (case-insensitive)."""
+    if not _instrument_loaded:
+        _load_instruments()
+    q = query.upper().strip()
+    if not q:
+        return []
+    prefix, substr = [], []
+    for inst in _instrument_cache:
+        sym_up  = inst["symbol"].upper()
+        name_up = inst["name"].upper()
+        if sym_up.startswith(q):
+            prefix.append(inst)
+        elif q in sym_up or q in name_up:
+            substr.append(inst)
+        if len(prefix) + len(substr) >= limit * 2:
+            break
+    return (prefix + substr)[:limit]
+
+
+def _resolve_instrument_key(ticker: str, instrument_key: str | None = None) -> str | None:
+    """Resolve an Upstox instrument_key for a ticker.
+    Uses explicit key if provided, else looks up via cached master file."""
+    if instrument_key:
+        return instrument_key
+    sym = ticker.upper().replace(".NS", "").strip()
+    if not _instrument_loaded:
+        _load_instruments()
+    for inst in _instrument_cache:
+        if inst["symbol"].upper() == sym:
+            return inst["instrument_key"]
+    return None
+
+# Upstox interval map
 IV_MAP = {
     "1m":  "1minute",
+    "5m":  "5minute",
+    "15m": "15minute",
     "30m": "30minute",
+    "1h":  "60minute",
     "1d":  "day",
     "1wk": "week",
     "1mo": "month",
 }
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MODEL REGISTRY
-# ═══════════════════════════════════════════════════════════════════════════════
+INTRADAY_IVS = ("1minute","5minute","15minute","30minute","60minute")
 
+# ── Model registry ────────────────────────────────────────────────────────────
 MODEL_PRIORITY = [
-    DEFAULT_MODEL,
-    "msa_gru_best.keras",
     "improved_minute_model.keras",
     "improved_flash_crash_model.keras",
 ]
-# Deduplicate while preserving order
-_seen = set()
-MODEL_PRIORITY = [m for m in MODEL_PRIORITY if not (m in _seen or _seen.add(m))]
-
 _loaded: dict = {}
 
 def _discover():
@@ -215,10 +171,9 @@ def _load(name: str):
         raise FileNotFoundError(f"Model not found: {name}")
     if not KERAS_OK:
         raise RuntimeError("TensorFlow not installed")
-    logger.info("Loading model: %s", name)
     m = _keras_load(str(fp), compile=False, custom_objects=_CUSTOM)
     _loaded[name] = m
-    logger.info("Model loaded: %s  input_shape=%s", name, m.input_shape)
+    print(f"  ✓ Loaded {name}: input={m.input_shape}")
     return m
 
 def _sig(model):
@@ -227,14 +182,10 @@ def _sig(model):
 
 def _best():
     f = _discover()
-    if not f:
-        raise RuntimeError("No model files found next to api_server.py")
+    if not f: raise RuntimeError("No model files found next to api_server.py")
     return f[0]
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FEATURES
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Features ──────────────────────────────────────────────────────────────────
 FEATURES_10 = [
     "return", "log_return",
     "volatility_5", "volatility_10", "volatility_20",
@@ -247,16 +198,8 @@ FEATURES_14 = [
     "high_low_spread","open_close_return","turnover_change",
 ]
 FEATURES_5 = ["return","volume_change","volatility_5","volatility_10","momentum_5"]
-FEATURES_MSA = [
-    "return_1", "return_5", "return_10",
-    "vol_10", "vol_30", "vol_60",
-    "ema_ratio_10_30", "ema_ratio_10_60",
-    "rsi_14", "spread", "vol_zscore",
-    "intraday_range", "momentum_10", "momentum_30",
-]
 
-def _pick_features(n, model_name=""):
-    if "msa" in model_name.lower(): return FEATURES_MSA
+def _pick_features(n):
     if n == 10: return FEATURES_10
     if n == 14: return FEATURES_14
     if n == 5:  return FEATURES_5
@@ -289,36 +232,11 @@ def _engineer(df):
     o["open_close_return"]  = (o["Close"] - o["Open"]) / o["Open"].replace(0, np.nan)
     o["turnover_change"]    = (o["Close"] * o["Volume"]).pct_change()
     o["price_acceleration"] = o["return"].diff()
-
-    # -- MSA GRU Features --
-    o["return_1"] = o["Close"].pct_change(1)
-    o["return_5"] = o["Close"].pct_change(5)
-    o["return_10"] = o["Close"].pct_change(10)
-    o["vol_10"] = o["return_1"].rolling(10).std()
-    o["vol_30"] = o["return_1"].rolling(30).std()
-    o["vol_60"] = o["return_1"].rolling(60).std()
-    o["ema_10"] = o["Close"].ewm(span=10, adjust=False).mean()
-    o["ema_30"] = o["Close"].ewm(span=30, adjust=False).mean()
-    o["ema_60"] = o["Close"].ewm(span=60, adjust=False).mean()
-    o["ema_ratio_10_30"] = o["ema_10"] / o["ema_30"] - 1
-    o["ema_ratio_10_60"] = o["ema_10"] / o["ema_60"] - 1
-    
-    delta = o["Close"].diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    rs    = gain / (loss + 1e-9)
-    o["rsi_14"] = 100 - 100 / (1 + rs)
-    
-    o["spread"] = (o["High"] - o["Low"]) / o["Close"].replace(0, np.nan)
-    o["vol_zscore"] = (o["Volume"] - o["Volume"].rolling(30).mean()) / o["Volume"].rolling(30).std().replace(0, np.nan)
-    o["intraday_range"] = (o["High"] - o["Low"]) / o["Open"].replace(0, np.nan)
-    o["momentum_30"] = o["Close"] / o["Close"].shift(30) - 1
-
     return o
 
-def _build_seq(df, timesteps, n_feat, model_name=""):
+def _build_seq(df, timesteps, n_feat):
     eng   = _engineer(df)
-    feats = _pick_features(n_feat, model_name)
+    feats = _pick_features(n_feat)
     ff    = eng[feats].replace([np.inf,-np.inf], np.nan).bfill().ffill().fillna(0)
     if len(ff) < timesteps:
         raise ValueError(f"Need {timesteps} rows, only got {len(ff)}. Use a longer period.")
@@ -326,29 +244,25 @@ def _build_seq(df, timesteps, n_feat, model_name=""):
     ff  = pd.DataFrame(sc.fit_transform(ff), columns=feats, index=ff.index)
     return np.expand_dims(ff.tail(timesteps).to_numpy(np.float32), 0), eng
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# UPSTOX DATA FETCHER (PRIMARY)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _upstox_headers(token):
-    return {"Accept": "application/json", "Authorization": f"Bearer {token}"}
+# ── Upstox data fetcher (PRIMARY) ─────────────────────────────────────────────
+def _upstox_headers(token=None):
+    h = {"Accept": "application/json"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 def _upstox_candles(instrument_key, interval, token, period="6mo"):
+    """Fetch historical + intraday candles from Upstox v2."""
     enc = instrument_key.replace("|", "%7C")
     hdr = _upstox_headers(token)
     all_candles = []
 
-    days_map = {"5d":7,"1mo":35,"3mo":95,"6mo":185,"1y":370,"2y":740,"5y":1825}
+    days_map = {"5d":7,"1mo":35,"3mo":95,"6mo":185,"1y":370,"2y":740,"5y":1825,"6y":2200,"10y":3650}
 
-    if interval in ("1minute", "30minute"):
-        h_from = (date.today() - timedelta(days=7)).strftime("%Y-%m-%d")
-        h_to   = date.today().strftime("%Y-%m-%d")
-        url    = f"{UPSTOX_BASE}/historical-candle/{enc}/{interval}/{h_to}/{h_from}"
-    else:
-        days   = days_map.get(period, 185)
-        fd     = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-        td_    = date.today().strftime("%Y-%m-%d")
-        url    = f"{UPSTOX_BASE}/historical-candle/{enc}/{interval}/{td_}/{fd}"
+    days = days_map.get(period, 185)
+    fd   = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+    td_  = date.today().strftime("%Y-%m-%d")
+    url  = f"{UPSTOX_BASE}/historical-candle/{enc}/{interval}/{td_}/{fd}"
 
     try:
         r = requests.get(url, headers=hdr, timeout=12)
@@ -356,12 +270,11 @@ def _upstox_candles(instrument_key, interval, token, period="6mo"):
             d = r.json()
             if d.get("status") == "success":
                 all_candles = d.get("data", {}).get("candles", [])
-        else:
-            logger.warning("Upstox historical: HTTP %d for %s", r.status_code, instrument_key)
     except Exception as e:
-        logger.error("Upstox historical error: %s", e)
+        print(f"  Upstox historical error: {e}")
 
-    if interval in ("1minute", "30minute"):
+    # Fetch today's intraday for all intraday intervals
+    if interval in INTRADAY_IVS:
         try:
             url2 = f"{UPSTOX_BASE}/historical-candle/intraday/{enc}/{interval}"
             r2   = requests.get(url2, headers=hdr, timeout=8)
@@ -370,7 +283,7 @@ def _upstox_candles(instrument_key, interval, token, period="6mo"):
                 if d2.get("status") == "success":
                     all_candles += d2.get("data", {}).get("candles", [])
         except Exception as e:
-            logger.error("Upstox intraday error: %s", e)
+            print(f"  Upstox intraday error: {e}")
 
     if not all_candles:
         return None
@@ -385,6 +298,7 @@ def _upstox_candles(instrument_key, interval, token, period="6mo"):
 
 
 def _upstox_quote(instrument_key, token):
+    """Get live LTP from Upstox market quote."""
     try:
         hdr = _upstox_headers(token)
         enc = instrument_key.replace("|", "%7C")
@@ -408,11 +322,12 @@ def _upstox_quote(instrument_key, token):
                         "change_pct": q.get("net_change", 0) / max(q.get("ohlc",{}).get("close",1),1) * 100,
                     }
     except Exception as e:
-        logger.error("Upstox quote error: %s", e)
+        print(f"  Upstox quote error: {e}")
     return None
 
 
 def _market_overview(token):
+    """Fetch live quotes for major indices and stocks."""
     tickers = {
         "NIFTY 50":   "NSE_INDEX|Nifty 50",
         "BANK NIFTY": "NSE_INDEX|Nifty Bank",
@@ -434,9 +349,11 @@ def _market_overview(token):
             if d.get("status") == "success":
                 data = d.get("data", {})
                 for name, ikey in tickers.items():
+                    # Upstox returns key with | replaced by :
                     lookup = ikey.replace("|",":")
                     q = data.get(lookup) or data.get(ikey) or {}
                     if not q:
+                        # Try matching by partial key
                         for dk in data.keys():
                             if ikey.split("|")[1] in dk:
                                 q = data[dk]; break
@@ -454,19 +371,14 @@ def _market_overview(token):
                         "high":    round(ohlc.get("high", 0), 2),
                         "low":     round(ohlc.get("low", 0), 2),
                     })
-        else:
-            logger.warning("Market overview HTTP %d", r.status_code)
     except Exception as e:
-        logger.error("Market overview error: %s", e)
+        print(f"  Market overview error: {e}")
     return results
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DEMO DATA FALLBACK
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Demo data fallback ─────────────────────────────────────────────────────────
 def _demo(period="6mo", interval="1d", seed=42):
-    td = {"5d":5,"1mo":22,"3mo":66,"6mo":132,"1y":252,"2y":504}.get(period,132)
+    td = {"5d":5,"1mo":22,"3mo":66,"6mo":132,"1y":252,"2y":504,"5y":1260}.get(period,132)
     if interval in {"1m","30m"}:
         mins = {"1m":1,"30m":30}[interval]; rows = max(60,(td*390)//mins); freq=f"{mins}min"
     else:
@@ -482,11 +394,8 @@ def _demo(period="6mo", interval="1d", seed=42):
     return pd.DataFrame({"Open":open_,"High":high,"Low":low,"Close":close,"Volume":vol},index=ts)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MAIN FETCH FUNCTION
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _fetch(ticker, period="6mo", interval="1d", token=None):
+# ── Main fetch function ────────────────────────────────────────────────────────
+def _fetch(ticker, period="6mo", interval="1d", token=None, instrument_key=None):
     """
     1. Try Upstox (if token provided)
     2. Try yFinance
@@ -494,42 +403,52 @@ def _fetch(ticker, period="6mo", interval="1d", token=None):
     Returns (DataFrame, source_string)
     """
     clean = ticker.upper().replace(".NS","").strip()
-    ikey  = NSE_MAP.get(ticker.upper()) or NSE_MAP.get(clean)
+    ikey  = _resolve_instrument_key(ticker, instrument_key)
     up_iv = IV_MAP.get(interval, "day")
 
-    # ── 1. Upstox ──────────────────────────────────────────────────────────────
-    if token and ikey:
+    # ── 1. Upstox (historical candles are public — no token needed) ─────────
+    if ikey:
         try:
             df = _upstox_candles(ikey, up_iv, token, period)
             if df is not None and len(df) > 5:
-                logger.info("Upstox: %d candles for %s", len(df), ticker)
+                print(f"  ✓ Upstox: {len(df)} candles for {ticker}")
                 return df, "upstox"
             else:
-                logger.warning("Upstox returned empty data for %s — trying fallback", ticker)
+                print(f"  Upstox returned empty for {ticker}")
         except Exception as e:
-            logger.error("Upstox fetch error for %s: %s", ticker, e)
+            print(f"  Upstox fetch error: {e}")
 
     # ── 2. yFinance ────────────────────────────────────────────────────────────
     try:
         import yfinance as yf
+        yf_iv_map = {
+            "1m":"1m","5m":"5m","15m":"15m","30m":"30m",
+            "1h":"1h","1d":"1d","1wk":"1wk","1mo":"1mo"
+        }
+        yf_period_cap = {"1m":"5d","5m":"60d","15m":"60d","30m":"60d"}
+        period_days  = {"5d":5,"1mo":30,"3mo":90,"6mo":180,"1y":365,
+                        "2y":730,"5y":1825,"6y":2190,"10y":3650,"60d":60,"7d":7}
+        yf_iv  = yf_iv_map.get(interval, "1d")
+        eff_p  = yf_period_cap.get(interval, period)
+        ndays  = period_days.get(eff_p, 180)
+        start  = (date.today() - timedelta(days=ndays)).strftime("%Y-%m-%d")
+        end    = date.today().strftime("%Y-%m-%d")
         sym = ticker if ".NS" in ticker else (ticker + ".NS" if ticker not in ["NIFTY50","BANKNIFTY","SENSEX"] else "^NSEI")
-        df = yf.Ticker(sym).history(period=period, interval=interval, auto_adjust=False)
+        df = yf.Ticker(sym).history(start=start, end=end, interval=yf_iv, auto_adjust=False)
         if df is not None and not df.empty:
             df = _flatten(df)
             df.index = pd.to_datetime(df.index)
-            logger.info("yFinance: %d rows for %s", len(df), ticker)
+            print(f"  ✓ yFinance: {len(df)} rows for {ticker}")
             return df, "yfinance"
     except Exception as e:
-        logger.error("yFinance error for %s: %s", ticker, e)
+        print(f"  yFinance error: {e}")
 
     # ── 3. Demo ────────────────────────────────────────────────────────────────
-    logger.warning("Using demo data for %s", ticker)
+    print(f"  Using demo data for {ticker}")
     return _demo(period, interval), "demo"
 
 
-def _risk_band(prob, threshold=None):
-    if threshold is None:
-        threshold = MODEL_THRESHOLD
+def _risk_band(prob, threshold=0.20):
     if prob >= threshold:        return "HIGH RISK"
     if prob >= threshold * 0.65: return "ELEVATED"
     return "STABLE"
@@ -561,6 +480,14 @@ def static_files(f):
 # API ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/api/search-stocks", methods=["GET"])
+def search_stocks():
+    """Live stock search — returns matching instruments."""
+    q = request.args.get("q", "").strip()
+    if len(q) < 1:
+        return jsonify([])
+    return jsonify(_search_instruments(q))
+
 @app.route("/api/health")
 def health():
     return jsonify({"status":"ok","keras":KERAS_OK,
@@ -574,13 +501,13 @@ def list_models():
             m = _load(name); ts,nf = _sig(m)
             out.append({"name":name,"timesteps":ts,"features":nf,"params":int(m.count_params())})
         except Exception as e:
-            logger.error("Failed to load model %s: %s", name, e)
             out.append({"name":name,"error":str(e).split("\n")[0]})
     return jsonify(out)
 
 
 @app.route("/api/market-overview", methods=["POST"])
 def market_overview():
+    """Live market overview — indices + top stocks."""
     try:
         d     = request.json or {}
         token = d.get("token") or DEFAULT_TOKEN
@@ -589,26 +516,25 @@ def market_overview():
         data = _market_overview(token)
         return jsonify({"data": data, "timestamp": datetime.now().strftime("%H:%M:%S")})
     except Exception as e:
-        logger.error("Market overview route error: %s", e, exc_info=True)
+        traceback.print_exc()
         return jsonify({"error":str(e),"data":[]}), 400
 
 
 @app.route("/api/quote", methods=["POST"])
 def quote():
+    """Live LTP for a single ticker."""
     try:
         d      = request.json or {}
         ticker = d.get("ticker","RELIANCE")
         token  = d.get("token") or DEFAULT_TOKEN
-        clean  = ticker.upper().replace(".NS","")
-        ikey   = NSE_MAP.get(ticker.upper()) or NSE_MAP.get(clean)
+        ikey   = _resolve_instrument_key(ticker, d.get("instrument_key"))
         if not ikey:
-            return jsonify({"error":f"Ticker {ticker} not in instrument map"}), 400
+            return jsonify({"error":f"Ticker {ticker} not found in instruments"}), 400
         q = _upstox_quote(ikey, token)
         if q:
             return jsonify(q)
         return jsonify({"error":"Quote unavailable"}), 400
     except Exception as e:
-        logger.error("Quote route error: %s", e, exc_info=True)
         return jsonify({"error":str(e)}), 400
 
 
@@ -620,27 +546,31 @@ def predict():
         model_name = d.get("model") or _best()
         period     = d.get("period","6mo")
         interval   = d.get("interval","1d")
-        threshold  = float(d.get("threshold", MODEL_THRESHOLD))
+        threshold  = float(d.get("threshold",0.20))
         token      = d.get("token") or d.get("upstox_token") or DEFAULT_TOKEN
-
-        logger.info("Predict request: ticker=%s model=%s period=%s interval=%s",
-                    ticker, model_name, period, interval)
+        inst_key   = d.get("instrument_key") or None
 
         model      = _load(model_name)
         ts, nf     = _sig(model)
-        df, source = _fetch(ticker, period, interval, token=token)
-        seq, eng   = _build_seq(df, ts, nf, model_name)
+        df, source = _fetch(ticker, period, interval, token=token, instrument_key=inst_key)
+        seq, eng   = _build_seq(df, ts, nf)
+        prob       = float(np.clip(model.predict(seq,verbose=0).ravel()[0],0,1))
+        band       = _risk_band(prob, threshold)
 
-        t0   = time.perf_counter()
-        prob = float(np.clip(model.predict(seq,verbose=0).ravel()[0],0,1))
-        inf_ms = (time.perf_counter() - t0) * 1000
+        # Feature values snapshot for UI display
+        feats_list = _pick_features(nf)
+        try:
+            feat_snap = eng[feats_list].dropna()
+            feature_values = {k: round(float(v), 6) for k, v in feat_snap.tail(1).iloc[0].to_dict().items()} if len(feat_snap) > 0 else {}
+        except Exception:
+            feature_values = {}
 
-        logger.info("Inference done: ticker=%s prob=%.4f band=%s latency=%.1fms",
-                    ticker, prob, _risk_band(prob, threshold), inf_ms)
-
-        band = _risk_band(prob, threshold)
-
-        chart_df = _flatten(df).tail(200)
+        # OHLC for chart — fetch 10 years of daily data
+        try:
+            chart_df_raw, _ = _fetch(ticker, period="10y", interval="1d", token=token, instrument_key=inst_key)
+            chart_df = _flatten(chart_df_raw).tail(2600)
+        except Exception:
+            chart_df = _flatten(df).tail(2600)
         ohlc = [
             {"date":  str(idx)[:19],
              "open":  round(float(r["Open"]),2),
@@ -651,10 +581,10 @@ def predict():
             for idx, r in chart_df.iterrows()
         ]
 
+        # Try to get live LTP from Upstox quote
         live_price = None
         if token:
-            clean = ticker.upper().replace(".NS","")
-            ikey  = NSE_MAP.get(ticker.upper()) or NSE_MAP.get(clean)
+            ikey = _resolve_instrument_key(ticker, inst_key)
             if ikey:
                 q = _upstox_quote(ikey, token)
                 if q: live_price = q.get("ltp")
@@ -662,22 +592,24 @@ def predict():
         latest_close = live_price or round(float(df["Close"].iloc[-1]),2)
 
         return jsonify({
-            "ticker":      ticker,
-            "model":       model_name,
-            "probability": round(prob,6),
-            "risk_pct":    round(prob*100,2),
-            "band":        band,
-            "threshold":   threshold,
-            "timesteps":   ts,
-            "features":    nf,
-            "ohlc":        ohlc,
-            "latest_close":latest_close,
-            "latest_date": str(df.index[-1])[:10],
-            "source":      source,
-            "live_price":  live_price,
+            "ticker":         ticker,
+            "model":          model_name,
+            "probability":    round(prob,6),
+            "risk_pct":       round(prob*100,2),
+            "band":           band,
+            "threshold":      threshold,
+            "timesteps":      ts,
+            "features":       nf,
+            "ohlc":           ohlc,
+            "latest_close":   latest_close,
+            "latest_date":    str(df.index[-1])[:10],
+            "source":         source,
+            "live_price":     live_price,
+            "feature_values": feature_values,
+            "interval":       interval,
         })
     except Exception as e:
-        logger.error("Predict route error: %s", e, exc_info=True)
+        traceback.print_exc()
         return jsonify({"error":str(e)}), 400
 
 
@@ -689,29 +621,73 @@ def portfolio():
         model_name = d.get("model") or _best()
         period     = d.get("period","6mo")
         interval   = d.get("interval","1d")
-        threshold  = float(d.get("threshold", MODEL_THRESHOLD))
+        threshold  = float(d.get("threshold",0.20))
         token      = d.get("token") or d.get("upstox_token") or DEFAULT_TOKEN
-
-        logger.info("Portfolio request: tickers=%s model=%s", tickers, model_name)
 
         model  = _load(model_name); ts,nf = _sig(model)
         results = []
+        inst_keys = d.get("instrument_keys", {})
         for t in tickers:
             try:
-                df,source = _fetch(t,period,interval,token=token)
-                seq,_     = _build_seq(df,ts,nf, model_name)
+                df,source = _fetch(t,period,interval,token=token,instrument_key=inst_keys.get(t))
+                seq,_     = _build_seq(df,ts,nf)
                 prob      = float(np.clip(model.predict(seq,verbose=0).ravel()[0],0,1))
                 results.append({"ticker":t,"probability":round(prob,6),
                                  "risk_pct":round(prob*100,2),"band":_risk_band(prob,threshold),
                                  "latest_close":round(float(df["Close"].iloc[-1]),2),"source":source})
             except Exception as e:
-                logger.warning("Portfolio error for %s: %s", t, e)
                 results.append({"ticker":t,"error":str(e)})
         results.sort(key=lambda x:x.get("probability",0),reverse=True)
         return jsonify({"results":results,"model":model_name,"threshold":threshold})
     except Exception as e:
-        logger.error("Portfolio route error: %s", e, exc_info=True)
+        traceback.print_exc()
         return jsonify({"error":str(e)}), 400
+
+
+@app.route("/api/rolling-risk", methods=["POST"])
+def rolling_risk():
+    """Compute rolling crash probability over historical data."""
+    try:
+        d          = request.json or {}
+        ticker     = d.get("ticker", "RELIANCE")
+        period     = d.get("period", "6mo")
+        interval   = d.get("interval", "1d")
+        token      = d.get("token") or DEFAULT_TOKEN
+        inst_key   = d.get("instrument_key") or None
+        threshold  = float(d.get("threshold", 0.20))
+        model_name = d.get("model") or _best()
+        model      = _load(model_name)
+        ts, nf     = _sig(model)
+        df, source = _fetch(ticker, period, interval, token=token, instrument_key=inst_key)
+        eng        = _engineer(df)
+        feats      = _pick_features(nf)
+        ff         = eng[feats].replace([np.inf,-np.inf], np.nan).bfill().ffill().fillna(0)
+        if len(ff) < ts + 1:
+            return jsonify({"error": f"Need {ts+1} rows, got {len(ff)}"}), 400
+        sc      = StandardScaler()
+        ff_arr  = ff.to_numpy(np.float32)
+        sc.fit(ff_arr)
+        ff_s    = sc.transform(ff_arr)
+        total   = len(ff) - ts
+        step    = max(1, total // 200)
+        indices = list(range(ts, len(ff), step))
+        if indices[-1] < len(ff) - 1:
+            indices.append(len(ff) - 1)
+        batch   = np.array([ff_s[i-ts:i] for i in indices], dtype=np.float32)
+        preds   = model.predict(batch, verbose=0, batch_size=32).ravel()
+        is_intraday = interval in ("1m","5m","15m","30m","1h")
+        results = []
+        for idx_i, prob in zip(indices, preds):
+            results.append({
+                "time":        str(ff.index[idx_i])[:19],
+                "probability": round(float(np.clip(prob, 0, 1)), 4),
+                "close":       round(float(df["Close"].iloc[idx_i]), 2),
+            })
+        return jsonify({"data": results, "ticker": ticker, "source": source,
+                        "threshold": threshold, "is_intraday": is_intraday})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -721,34 +697,36 @@ def upload_csv():
             return jsonify({"error":"No file uploaded"}), 400
         f          = request.files["file"]
         model_name = request.form.get("model") or _best()
-        threshold  = float(request.form.get("threshold", MODEL_THRESHOLD))
+        threshold  = float(request.form.get("threshold",0.20))
         model      = _load(model_name); ts,nf = _sig(model)
         df         = _norm(pd.read_csv(io.BytesIO(f.read())))
-        seq,eng    = _build_seq(df,ts,nf, model_name)
+        seq,eng    = _build_seq(df,ts,nf)
         prob       = float(np.clip(model.predict(seq,verbose=0).ravel()[0],0,1))
-        feats      = _pick_features(nf, model_name)
+        feats      = _pick_features(nf)
         snap       = {k:round(float(v),6) for k,v in eng[feats].dropna().tail(1).iloc[0].to_dict().items()}
-        logger.info("CSV upload: model=%s rows=%d prob=%.4f", model_name, len(df), prob)
         return jsonify({"probability":round(prob,6),"risk_pct":round(prob*100,2),
                          "band":_risk_band(prob,threshold),"threshold":threshold,
                          "model":model_name,"rows_loaded":len(df),"features":snap})
     except Exception as e:
-        logger.error("Upload route error: %s", e, exc_info=True)
+        traceback.print_exc()
         return jsonify({"error":str(e)}), 400
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    logger.info("=" * 62)
-    logger.info("  ⚡ FlashGuard v4 — Upstox Real-Time Server")
-    logger.info("=" * 62)
+    print("="*62)
+    print("  ⚡ FlashGuard v4 — Upstox Real-Time Server")
+    print("="*62)
     found = _discover()
-    logger.info("  Models   : %s", found)
-    logger.info("  Frontend : %s", FRONTEND)
-    logger.info("  URL      : http://%s:%d", FLASK_HOST, FLASK_PORT)
-    logger.info("  Dashboard: http://%s:%d/dashboard.html", FLASK_HOST, FLASK_PORT)
-    logger.info("=" * 62)
+    print(f"  Models   : {found}")
+    print(f"  Frontend : {FRONTEND}")
+    print(f"  URL      : http://localhost:5000")
+    print(f"  Dashboard: http://localhost:5000/dashboard.html")
+    print("="*62)
     for name in found:
-        try:   _load(name)
-        except Exception as e: logger.error("  Failed to pre-load %s: %s", name, e)
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=FLASK_DEBUG)
+        try:   _load(name); print(f"  ✓ {name}")
+        except Exception as e: print(f"  ✗ {name}: {e}")
+    print()
+    import os
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

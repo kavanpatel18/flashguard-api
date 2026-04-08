@@ -102,8 +102,9 @@
       display:flex; align-items:center; justify-content:center; font-size:.85rem;
       box-shadow:0 0 16px var(--cyan-glow),inset 0 0 10px var(--cyan-dim);
       clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);
-      animation:hpulse 4s ease-in-out infinite; color:var(--cyan);
+      animation:hpulse 4s ease-in-out infinite; color:var(--cyan); overflow:hidden;
     }
+    .logo-mark img { width:100%; height:100%; object-fit:cover; }
     @keyframes hpulse {
       0%,100%{box-shadow:0 0 14px var(--cyan-glow),inset 0 0 10px var(--cyan-dim)}
       50%{box-shadow:0 0 30px var(--cyan-glow),inset 0 0 18px var(--cyan-dim)}
@@ -509,7 +510,7 @@
 <!-- ═══════════ NAVBAR ═══════════ -->
 <nav id="nav">
   <div class="nav-logo">
-    <div class="logo-mark">⚡</div>
+    <div class="logo-mark"><img src="Logo.png" alt="FlashGuard"></div>
     FLASHGUARD
   </div>
   <div class="nav-links">
@@ -787,7 +788,7 @@
 <!-- ═══════════ FOOTER ═══════════ -->
 <footer>
   <div class="f-logo">
-    <div class="logo-mark" style="width:28px;height:28px;font-size:.8rem;">⚡</div>
+    <div class="logo-mark" style="width:28px;height:28px;font-size:.8rem;"><img src="Logo.png" alt="FlashGuard"></div>
     FLASHGUARD
   </div>
   <div class="f-links">
