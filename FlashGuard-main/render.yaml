@@ -2,6 +2,7 @@ services:
   - type: web
     name: flashguard
     runtime: python
+    rootDir: FlashGuard-main
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn api_server:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
     envVars:
