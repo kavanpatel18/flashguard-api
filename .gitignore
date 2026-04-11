@@ -1,0 +1,25 @@
+# Python Caches & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.yfinance_cache/
+
+# Datasets & Large Files (Prevent GitHub rejection)
+data/*.csv
+data/**/*.csv
+
+# Logs
+*.log
+out.log
+out2.log
+
+# Legacy/Archive
+# Uncomment if you don't want to track the legacy folder at all
+# legacy/
+
+# OS Settings
+.DS_Store
+Thumbs.db

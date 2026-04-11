@@ -1,0 +1,15 @@
+app:
+  snapshot_interval_ms: 100
+  log_level: "INFO"
+market:
+  symbol: "NIFTY_500"
+kafka:
+  bootstrap_servers: "localhost:9092"
+  raw_topic: "raw_ticks"
+  feature_topic: "lob_features"
+model:
+  levels: 10
+  sequence_length: 100
+  num_features: 45 # 40 DeepLOB L2 states + 5 ML-HFT features
+  threshold: 0.8
+  model_path: "weights/conv_transformer.pth"

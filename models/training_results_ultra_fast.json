@@ -1,0 +1,17 @@
+{
+  "model_type": "Conv_Transformer_Fast",
+  "optimal_threshold": 0.4801214039325714,
+  "training_time_seconds": 292.61,
+  "total_parameters": 101697,
+  "sequence_length": 20,
+  "num_features": 8,
+  "test_accuracy": 0.6656143173134929,
+  "test_precision": 0.6643487836211994,
+  "test_recall": 0.9948393795040918,
+  "test_f1": 0.7966791788426033,
+  "test_auc": 0.5661817331442713,
+  "test_true_positives": 32579,
+  "test_false_positives": 16460,
+  "test_false_negatives": 169,
+  "test_true_negatives": 522
+}

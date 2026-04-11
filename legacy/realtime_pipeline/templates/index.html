@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlashSense GUI - Real-Time Dashboard</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&display=swap');
+        
+        :root {
+            --bg-dark: #05050a;
+            --panel-bg: rgba(15, 15, 25, 0.6);
+            --neon-blue: #00f0ff;
+            --neon-red: #ff2a2a;
+            --neon-green: #00ff66;
+            --text-main: #e0e5ff;
+            --text-muted: #8a8d9e;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            height: 100vh;
+            overflow: hidden;
+            background-image: radial-gradient(circle at 50% 0%, #1a1a3a 0%, var(--bg-dark) 60%);
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 300px 1fr 350px;
+            grid-template-rows: 80px 1fr;
+            height: 100vh;
+            padding: 20px;
+            gap: 20px;
+        }
+
+        header {
+            grid-column: 1 / -1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 15px;
+        }
+
+        .logo {
+            font-size: 28px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px var(--neon-blue);
+        }
+        .logo span { color: var(--neon-blue); }
+
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 8px 32px 0 rgba(0,0,0,0.5);
+            transition: transform 0.3s ease;
+        }
+
+        .glass-panel:hover {
+            border-color: rgba(0, 240, 255, 0.3);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
+        }
+
+        h3 {
+            color: var(--text-muted);
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            background: rgba(0,255,102,0.1);
+            color: var(--neon-green);
+            border: 1px solid var(--neon-green);
+        }
+
+        /* Center Graph */
+        .chart-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        .prob-dial {
+            width: 300px;
+            height: 300px;
+            border-radius: 50%;
+            border: 4px solid rgba(255,255,255,0.05);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            background: conic-gradient(var(--neon-blue) 0%, transparent 0%);
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 0 40px rgba(0, 240, 255, 0.1);
+        }
+
+        .inner-dial {
+            width: 270px;
+            height: 270px;
+            border-radius: 50%;
+            background: var(--bg-dark);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #prob-text {
+            font-size: 56px;
+            font-weight: 700;
+            color: var(--neon-blue);
+            text-shadow: 0 0 20px var(--neon-blue);
+        }
+
+        .signal-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 10px;
+        }
+        
+        .signal-row span:last-child {
+            font-weight: 600;
+            color: white;
+        }
+
+        @keyframes pulseAlert {
+            0% { box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(255, 42, 42, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 42, 42, 0); }
+        }
+
+        .alert-state .prob-dial {
+            background: conic-gradient(var(--neon-red) 100%, transparent 0%) !important;
+            box-shadow: 0 0 60px rgba(255, 42, 42, 0.4);
+            animation: pulseAlert 1s infinite;
+        }
+        
+        .alert-state #prob-text {
+            color: var(--neon-red);
+            text-shadow: 0 0 20px var(--neon-red);
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <header>
+            <div class="logo">Flash<span>Sense</span></div>
+            <div class="status-badge" id="sys-status">SYSTEM ONLINE • LIVE WS</div>
+        </header>
+
+        <!-- Left Side: Stream and Features -->
+        <div class="glass-panel" style="display:flex; flex-direction:column;">
+            <h3>DeepLOB Feature Extract</h3>
+            
+            <div style="margin-top: 20px;">
+                <div class="signal-row">
+                    <span>Micro-Price</span>
+                    <span id="micro-price">22,000.00</span>
+                </div>
+                <div class="signal-row">
+                    <span>Order Flow Imbalance</span>
+                    <span id="ofi">+42.1</span>
+                </div>
+                <div class="signal-row">
+                    <span>Depth Ratio (L10)</span>
+                    <span id="depth-ratio">1.04</span>
+                </div>
+                <div class="signal-row">
+                    <span>Model Inference</span>
+                    <span id="latency">0.8ms</span>
+                </div>
+            </div>
+            
+            <div style="margin-top:auto">
+                <h3>System Logs</h3>
+                <div id="logs" style="font-family: monospace; font-size:11px; color:var(--text-muted); line-height:1.6; max-height: 150px; overflow:hidden;"></div>
+            </div>
+        </div>
+
+        <!-- Center: Flash Crash Probability Dial -->
+        <div class="glass-panel chart-container" id="main-chart">
+            <h3>Conv-Transformer Crash Prediction</h3>
+            <p style="color:var(--text-muted); margin-bottom:40px; text-align:center;">Forward Window: 10s | Threshold: 0.8</p>
+            
+            <div class="prob-dial" id="dial">
+                <div class="inner-dial">
+                    <div id="prob-text">0.05</div>
+                    <div style="color:var(--text-muted); font-size:14px; margin-top:10px; text-transform:uppercase; letter-spacing:2px;">Probability</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Side: Recent Alerts -->
+        <div class="glass-panel">
+            <h3>Risk Alert Subsystem</h3>
+            <div id="alerts" style="margin-top:20px;">
+                <!-- Filled via JS -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function updateLog(msg, isAlert=false) {
+            const el = document.getElementById('logs');
+            const color = isAlert ? 'var(--neon-red)' : 'var(--text-muted)';
+            el.innerHTML = `<span style="color:${color}">[${new Date().toLocaleTimeString()}] ${msg}</span><br>` + el.innerHTML;
+        }
+
+        function updateAlert(prob) {
+            const el = document.getElementById('alerts');
+            const stamp = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.style.padding = '15px';
+            div.style.background = 'rgba(255, 42, 42, 0.1)';
+            div.style.borderLeft = '3px solid var(--neon-red)';
+            div.style.marginBottom = '10px';
+            div.style.borderRadius = '4px';
+            div.innerHTML = `<strong style="color:white">CRITICAL FLASH CRASH RISK</strong><br>
+                             <span style="color:var(--neon-red); font-size:14px;">Probability: ${prob} • ${stamp}</span>`;
+            el.prepend(div);
+        }
+
+        async function fetchState() {
+            try {
+                const res = await fetch('/api/stream');
+                const data = await res.json();
+
+                document.getElementById('micro-price').innerText = data.micro_price.toFixed(2);
+                document.getElementById('ofi').innerText = data.ofi > 0 ? '+' + data.ofi : data.ofi;
+                document.getElementById('ofi').style.color = data.ofi > 0 ? 'var(--neon-green)' : 'var(--neon-red)';
+                document.getElementById('depth-ratio').innerText = data.depth_ratio.toFixed(2);
+                
+                const prob = data.crash_prob;
+                document.getElementById('prob-text').innerText = prob.toFixed(4);
+                
+                const chart = document.getElementById('main-chart');
+                const dial = document.getElementById('dial');
+                
+                const pct = prob * 100;
+
+                if(prob > 0.8) {
+                    chart.classList.add('alert-state');
+                    updateAlert(prob.toFixed(4));
+                    updateLog(`CRITICAL: Model detected signature above 80% threshold`, true);
+                    document.getElementById('sys-status').innerText = 'RISK PROTOCOL ACTIVE';
+                    document.getElementById('sys-status').style.color = 'var(--neon-red)';
+                    document.getElementById('sys-status').style.borderColor = 'var(--neon-red)';
+                } else {
+                    chart.classList.remove('alert-state');
+                    dial.style.background = `conic-gradient(var(--neon-blue) ${pct}%, transparent 0%)`;
+                    document.getElementById('sys-status').innerText = 'SYSTEM ONLINE • LIVE WS';
+                    document.getElementById('sys-status').style.color = 'var(--neon-green)';
+                    document.getElementById('sys-status').style.borderColor = 'var(--neon-green)';
+                }
+
+            } catch(e) { console.error(e); }
+        }
+
+        setInterval(fetchState, 1000);
+        updateLog("Conv-Transformer Core Initialized");
+        updateLog("HftBacktest Order Book Subscribed");
+        updateLog("Connected to Kafka: lob_features");
+    </script>
+</body>
+</html>
