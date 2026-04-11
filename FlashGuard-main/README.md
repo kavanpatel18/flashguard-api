@@ -10,7 +10,10 @@
     <img src="https://img.shields.io/badge/Flask-3.0+-green?logo=flask&logoColor=white"/>
     <img src="https://img.shields.io/badge/Upstox-v2_API-7B2FBE?logo=data:image/svg+xml;base64,&logoColor=white"/>
     <img src="https://img.shields.io/badge/Status-Production_Ready-brightgreen"/>
+    <a href="https://flashguard-api.onrender.com"><img src="https://img.shields.io/badge/Live_Demo-🟢_Online-success"/></a>
   </p>
+
+  <h3>🌐 Live at: <a href="https://flashguard-api.onrender.com">https://flashguard-api.onrender.com</a></h3>
 </div>
 
 ---
@@ -144,16 +147,29 @@ curl -X POST http://localhost:5000/api/predict \
 
 ## 🚀 Deployment
 
-### Render (Gunicorn)
+### ✅ Currently Live on Render
+
+FlashGuard is deployed and publicly accessible at:
+
+> **🌐 https://flashguard-api.onrender.com**
+> **📊 Dashboard: https://flashguard-api.onrender.com/dashboard.html**
+
+> ⚠️ **Free tier note:** The service spins down after ~15 minutes of inactivity. The first request after sleep may take 30–50 seconds to wake up.
+
+### Re-deploying (Render)
+Any `git push` to `main` automatically triggers a new deployment via the connected GitHub repo.
+
 ```bash
-# Deployed automatically using render.yaml
+# Deployed using render.yaml configuration
 gunicorn api_server:app --bind 0.0.0.0:$PORT --timeout 120 --workers 1
 ```
 
 ### Hugging Face Spaces (Docker)
+Alternatively, the included `Dockerfile` can be used to deploy directly to [Hugging Face Spaces](https://huggingface.co/spaces) using the Docker SDK:
+
 ```bash
-# Built from Dockerfile on every push to main
-docker build -t flashguard .
+# Built from Dockerfile on every push
+docker build -t flashguard -f FlashGuard-main/Dockerfile .
 docker run -p 5000:7860 flashguard
 ```
 

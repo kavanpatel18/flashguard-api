@@ -15,7 +15,10 @@
     <img src="https://img.shields.io/badge/TensorFlow-2.13+-orange?logo=tensorflow&logoColor=white" alt="TensorFlow Badge"/>
     <img src="https://img.shields.io/badge/Flask-3.0+-green?logo=flask&logoColor=white" alt="Flask Badge"/>
     <img src="https://img.shields.io/badge/Upstox-v2_API-purple?logo=upstox&logoColor=white" alt="Upstox Badge"/>
+    <a href="https://flashguard-api.onrender.com"><img src="https://img.shields.io/badge/Live_Demo-🟢_Online-brightgreen?style=flat-square" alt="Live Demo"/></a>
   </p>
+
+  <h3>🌐 <a href="https://flashguard-api.onrender.com">Live Demo → flashguard-api.onrender.com</a></h3>
 </div>
 
 ---
